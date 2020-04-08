@@ -21,7 +21,7 @@
 // File function and bzero
 #include <fcntl.h>
 #include <unistd.h>
-#include <string.h>
+#include <strings.h>
 #include "ikcp.h"
 
 /* Taille du buffer utilise pour envoyer le fichier
@@ -52,53 +52,6 @@ int kcp_op(const char *buf, int len, ikcpcb *kcp, void *user)
     return sendto(ctx->fd, buf, len, 0, ctx->addr, ctx->socklen);
 }
 
-/* get system time */
-static inline void itimeofday(long *sec, long *usec)
-{
-#if defined(__unix)
-    struct timeval time;
-    gettimeofday(&time, NULL);
-    if (sec)
-        *sec = time.tv_sec;
-    if (usec)
-        *usec = time.tv_usec;
-#else
-    static long mode = 0, addsec = 0;
-    BOOL retval;
-    static IINT64 freq = 1;
-    IINT64 qpc;
-    if (mode == 0)
-    {
-        retval = QueryPerformanceFrequency((LARGE_INTEGER *)&freq);
-        freq = (freq == 0) ? 1 : freq;
-        retval = QueryPerformanceCounter((LARGE_INTEGER *)&qpc);
-        addsec = (long)time(NULL);
-        addsec = addsec - (long)((qpc / freq) & 0x7fffffff);
-        mode = 1;
-    }
-    retval = QueryPerformanceCounter((LARGE_INTEGER *)&qpc);
-    retval = retval * 2;
-    if (sec)
-        *sec = (long)(qpc / freq) + addsec;
-    if (usec)
-        *usec = (long)((qpc % freq) * 1000000 / freq);
-#endif
-}
-/* get clock in millisecond 64 */
-static inline IINT64 iclock64(void)
-{
-    long s, u;
-    IINT64 value;
-    itimeofday(&s, &u);
-    value = ((IINT64)s) * 1000 + (u / 1000);
-    return value;
-}
-
-static inline IUINT32 iclock()
-{
-    return (IUINT32)(iclock64() & 0xfffffffful);
-}
-
 int main(int argc, char **argv)
 {
     struct timeval start, stop, delta;
@@ -119,7 +72,7 @@ int main(int argc, char **argv)
     }
 
     sfd = create_client_socket(atoi(argv[2]), argv[1]);
-    struct kcp_context *ctx = (struct kcp_context *)malloc(sizeof(struct kcp_context));
+    struct kcp_context *ctx = malloc(sizeof(struct kcp_context));
     ctx->addr = &sock_serv;
     ctx->socklen = l;
     ctx->fd = sfd;
@@ -190,8 +143,7 @@ int main(int argc, char **argv)
     //m = ikcp_send(kcpobj,buf,n);
     char endbuf[13] = {0x22, 0x00, 0x0d, 0xf4, 0x35, 0x31, 0x02, 0x71, 0xa7, 0x31, 0x88, 0x80, 0x00};
     uint32_t number = htonl(0xDEADBEAF);
-    ikcp_send(kcpobj, endbuf, sizeof(endbuf));
-    printf("send endbuf \n");
+    ikcp_send(kcpobj, &endbuf, sizeof(endbuf));
     usleep(20);
     ikcp_update(kcpobj, iclock());
     ikcp_flush(kcpobj);
@@ -201,16 +153,9 @@ int main(int argc, char **argv)
     while (1)
     {
         int now = ikcp_waitsnd(kcpobj);
-        //if (last != now || ocount < 500 || now > 100) //bug:  data not sent complete
-        if (now > 0)
-        {  
+        if (last != now || ocount < 50)
+        {
             ikcp_update(kcpobj, iclock());
-            m = ikcp_recv(kcpobj, buf, BUFFERT); //add by xzy
-            if (m == 13 && (!strcmp(buf, endbuf)) ) {
-                printf("recv endbuf \n");
-                break;
-            }
-
             n = recvfrom(sfd, &buf, BUFFERT, MSG_DONTWAIT, (struct sockaddr *)&sock_serv, &l);
             //printf("Window %d,last %d\n",now,last);
             if (n > 0)
@@ -234,7 +179,6 @@ int main(int argc, char **argv)
     gettimeofday(&stop, NULL);
     duration(&start, &stop, &delta);
 
-    printf("ikcp_waitsnd : %d\n", ikcp_waitsnd(kcpobj));
     printf("Nombre d'octets transférés : %lld\n", count);
     printf("Sur une taille total de : %lld \n", sz);
     printf("Pour une durée total de : %ld.%d \n", delta.tv_sec, delta.tv_usec);

@@ -22,7 +22,7 @@
 // File function and bzero
 #include <fcntl.h>
 #include <unistd.h>
-#include <string.h>
+#include <strings.h>
 #include "ikcp.h"
 
 /* Taille du buffer utilise pour envoyer le fichier
@@ -51,53 +51,6 @@ int kcp_op(const char *buf, int len, ikcpcb *kcp, void *user)
     return sendto(ctx->fd, buf, len, 0, ctx->addr, ctx->socklen);
 }
 
-/* get system time */
-static inline void itimeofday(long *sec, long *usec)
-{
-#if defined(__unix)
-    struct timeval time;
-    gettimeofday(&time, NULL);
-    if (sec)
-        *sec = time.tv_sec;
-    if (usec)
-        *usec = time.tv_usec;
-#else
-    static long mode = 0, addsec = 0;
-    BOOL retval;
-    static IINT64 freq = 1;
-    IINT64 qpc;
-    if (mode == 0)
-    {
-        retval = QueryPerformanceFrequency((LARGE_INTEGER *)&freq);
-        freq = (freq == 0) ? 1 : freq;
-        retval = QueryPerformanceCounter((LARGE_INTEGER *)&qpc);
-        addsec = (long)time(NULL);
-        addsec = addsec - (long)((qpc / freq) & 0x7fffffff);
-        mode = 1;
-    }
-    retval = QueryPerformanceCounter((LARGE_INTEGER *)&qpc);
-    retval = retval * 2;
-    if (sec)
-        *sec = (long)(qpc / freq) + addsec;
-    if (usec)
-        *usec = (long)((qpc % freq) * 1000000 / freq);
-#endif
-}
-/* get clock in millisecond 64 */
-static inline IINT64 iclock64(void)
-{
-    long s, u;
-    IINT64 value;
-    itimeofday(&s, &u);
-    value = ((IINT64)s) * 1000 + (u / 1000);
-    return value;
-}
-
-static inline IUINT32 iclock()
-{
-    return (IUINT32)(iclock64() & 0xfffffffful);
-}
-
 int main(int argc, char **argv)
 {
     //Descripteur
@@ -106,13 +59,7 @@ int main(int argc, char **argv)
     char buf[BUFFERT];
     off_t count = 0, n, m; // long type
     char filename[256];
-
-#ifdef ANDROID
-  socklen_t l = sizeof(struct sockaddr_in);
-#else
-  unsigned int l = sizeof(struct sockaddr_in);
-#endif    
-    
+    unsigned int l = sizeof(struct sockaddr_in);
 
     // Variable pour la date
     time_t intps;
@@ -139,7 +86,7 @@ int main(int argc, char **argv)
     intps = time(NULL);
     tmi = localtime(&intps);
     bzero(filename, 256);
-    sprintf(filename, "clt.%d.%d.%d.%d.%d.%d.mp4", tmi->tm_mday, tmi->tm_mon + 1, 1900 + tmi->tm_year, tmi->tm_hour, tmi->tm_min, tmi->tm_sec);
+    sprintf(filename, "clt.%d.%d.%d.%d.%d.%d", tmi->tm_mday, tmi->tm_mon + 1, 1900 + tmi->tm_year, tmi->tm_hour, tmi->tm_min, tmi->tm_sec);
     printf("Creating the output file : %s\n", filename);
 
     //ouverture du fichier
@@ -152,18 +99,17 @@ int main(int argc, char **argv)
     //preparation de l'envoie
     bzero(&buf, BUFFERT);
     n = recvfrom(sfd, &buf, BUFFERT, 0, (struct sockaddr *)&clt, &l);
-    struct kcp_context *ctx = (struct kcp_context *)malloc(sizeof(struct kcp_context));
+    struct kcp_context *ctx = malloc(sizeof(struct kcp_context));
     int finished = 0;
-    //char *t;
- 
-    char endbuf[13] = {0x22, 0x00, 0x0d, 0xf4, 0x35, 0x31, 0x02, 0x71, 0xa7, 0x31, 0x88, 0x80, 0x00};
+    char *t;
+    char t2 = {0x22, 0x00, 0x0d, 0xf4, 0x35, 0x31, 0x02, 0x71, 0xa7, 0x31, 0x88, 0x80, 0x00};
     ctx->addr = (struct sockaddr *)&clt;
     ctx->socklen = l;
     ctx->fd = sfd;
     ikcpcb *kcpobj = ikcp_create(123, ctx);
     ikcp_setoutput(kcpobj, kcp_op);
     ikcp_nodelay(kcpobj, 1, 20, 2, 1);
-    ikcp_wndsize(kcpobj, 1024, 1024);
+    ikcp_wndsize(kcpobj, 32, 1024);
     ikcp_update(kcpobj, iclock());
     ikcp_input(kcpobj, buf, n);
     while (n)
@@ -178,12 +124,14 @@ int main(int argc, char **argv)
                 perror("read fails");
                 return EXIT_FAILURE;
             }
-            else if (m == 13 && (!strcmp(buf, endbuf)))
-            {      
-                printf("recv endbuf \n");
-                finished = 1;
+            else if (m == 13)
+            {
+                t = (char *)buf;
+                if (strcmp(t, &t2))
+                {
+                    finished = 1;
+                }
             }
-
             if (count == 0 && m > 0)
             {
                 st = time(NULL);
@@ -192,7 +140,6 @@ int main(int argc, char **argv)
             write(fd, buf, m);
             m = ikcp_recv(kcpobj, buf, BUFFERT);
         }
-        //printf("%lld count \n",count);
         bzero(buf, BUFFERT);
         n = recvfrom(sfd, &buf, BUFFERT, MSG_DONTWAIT, (struct sockaddr *)&clt, &l);
         if (n > 0)
@@ -205,14 +152,6 @@ int main(int argc, char **argv)
         }
         usleep(20);
     }
-
-    /////
-    ikcp_send(kcpobj, endbuf, sizeof(endbuf));
-    printf("send endbuf \n");
-    usleep(20);
-    ikcp_update(kcpobj, iclock());
-    ikcp_flush(kcpobj);
-    /////
     int ocount = 0;
     int last = 0;
     last = ikcp_waitsnd(kcpobj);
@@ -284,12 +223,6 @@ int create_server_socket(int port)
     {
         perror("socket fail");
         return EXIT_FAILURE;
-    }
-
-    int yes = 1;
-    if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1)
-    {
-        perror("Failed to reuse socket "   );
     }
 
     //preparation de l'adresse de la socket destination
